@@ -18,6 +18,10 @@ keywords = ["neuralnetworks", "onnx", "bindings"]
 name = "integration_tests"
 required-features = ["model-fetching"]
 
+[[test]]
+name = "test_inputs_outputs"
+required-features = ["model-fetching"]
+
 [dependencies]
 lazy_static = "1.4"
 ndarray = "0.15"

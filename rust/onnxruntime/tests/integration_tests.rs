@@ -1,12 +1,12 @@
+use onnxruntime::error::OrtDownloadError;
+use onnxruntime::tensor::ndarray_tensor::NdArrayTensor;
+use onnxruntime::tensor::WithOutputTensor;
 use std::{
     fs,
     io::{self, BufRead, BufReader},
     path::Path,
     time::Duration,
 };
-
-use onnxruntime::error::OrtDownloadError;
-use onnxruntime::tensor::OrtOwnedTensor;
 
 mod download {
     use super::*;
@@ -97,12 +97,12 @@ mod download {
 
         // Perform the inference
         let outputs: Vec<
-            onnxruntime::tensor::OrtOwnedTensor<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+            onnxruntime::tensor::WithOutputTensor<ndarray::ArrayView<f32, ndarray::IxDyn>>,
         > = session.run(input_tensor_values).unwrap();
 
         // Downloaded model does not have a softmax as final layer; call softmax on second axis
         // and iterate on resulting probabilities, creating an index to later access labels.
-        let output: &OrtOwnedTensor<f32, _> = &outputs[0];
+        let output: &WithOutputTensor<ndarray::ArrayView<f32, _>> = &outputs[0];
         let mut probabilities: Vec<(usize, f32)> = output
             .softmax(ndarray::Axis(1))
             .iter()
@@ -189,10 +189,10 @@ mod download {
 
         // Perform the inference
         let outputs: Vec<
-            onnxruntime::tensor::OrtOwnedTensor<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+            onnxruntime::tensor::WithOutputTensor<ndarray::ArrayView<f32, ndarray::IxDyn>>,
         > = session.run(input_tensor_values).unwrap();
 
-        let output: &OrtOwnedTensor<f32, _> = &outputs[0];
+        let output: &WithOutputTensor<ndarray::ArrayView<f32, ndarray::IxDyn>> = &outputs[0];
         let mut probabilities: Vec<(usize, f32)> = output
             .softmax(ndarray::Axis(1))
             .iter()
@@ -276,10 +276,13 @@ mod download {
 
                     // Perform the inference
                     let outputs: Vec<
-                        onnxruntime::tensor::OrtOwnedTensor<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+                        onnxruntime::tensor::WithOutputTensor<
+                            ndarray::ArrayView<f32, ndarray::IxDyn>,
+                        >,
                     > = session.run(input_tensor_values).unwrap();
 
-                    let output: &OrtOwnedTensor<f32, _> = &outputs[0];
+                    let output: &WithOutputTensor<ndarray::ArrayView<f32, ndarray::IxDyn>> =
+                        &outputs[0];
                     let mut probabilities: Vec<(usize, f32)> = output
                         .softmax(ndarray::Axis(1))
                         .iter()
@@ -366,10 +369,12 @@ mod download {
 
                     // Perform the inference
                     let outputs: Vec<
-                        onnxruntime::tensor::OrtOwnedTensor<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+                        onnxruntime::tensor::WithOutputTensor<
+                            ndarray::ArrayView<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+                        >,
                     > = session.run(input_tensor_values).unwrap();
 
-                    let output: &OrtOwnedTensor<f32, _> = &outputs[0];
+                    let output: &WithOutputTensor<ndarray::ArrayView<f32, _>> = &outputs[0];
                     let mut probabilities: Vec<(usize, f32)> = output
                         .softmax(ndarray::Axis(1))
                         .iter()
@@ -474,7 +479,9 @@ mod download {
 
         // Perform the inference
         let outputs: Vec<
-            onnxruntime::tensor::OrtOwnedTensor<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+            onnxruntime::tensor::WithOutputTensor<
+                ndarray::ArrayView<f32, ndarray::Dim<ndarray::IxDynImpl>>,
+            >,
         > = session.run(input_tensor_values).unwrap();
 
         assert_eq!(outputs.len(), 1);

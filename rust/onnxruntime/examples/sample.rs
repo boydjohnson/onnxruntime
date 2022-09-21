@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
 use onnxruntime::{
-    environment::Environment, ndarray::Array, tensor::OrtOwnedTensor, GraphOptimizationLevel,
-    LoggingLevel,
+    environment::Environment,
+    ndarray::{Array, ArrayView, IxDyn},
+    tensor::WithOutputTensor,
+    GraphOptimizationLevel, LoggingLevel,
 };
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -64,7 +66,7 @@ fn run() -> Result<(), Error> {
         .unwrap();
     let input_tensor_values = vec![array];
 
-    let outputs: Vec<OrtOwnedTensor<f32, _>> = session.run(input_tensor_values)?;
+    let outputs: Vec<WithOutputTensor<ArrayView<f32, IxDyn>>> = session.run(input_tensor_values)?;
 
     assert_eq!(outputs[0].shape(), output0_shape.as_slice());
     for i in 0..5 {

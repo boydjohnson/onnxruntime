@@ -1,6 +1,6 @@
 //! Module containing session types
 
-use std::{ffi::CString, fmt::Debug, path::Path};
+use std::{convert::TryFrom, ffi::CString, fmt::Debug, path::Path};
 
 #[cfg(not(target_family = "windows"))]
 use std::os::unix::ffi::OsStrExt;
@@ -10,7 +10,6 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(feature = "model-fetching")]
 use std::env;
 
-use ndarray::Array;
 use tracing::{debug, error};
 
 use onnxruntime_sys as sys;
@@ -25,11 +24,10 @@ use crate::{
     g_ort,
     memory::MemoryInfo,
     tensor::{
-        ort_owned_tensor::{OrtOwnedTensor, OrtOwnedTensorExtractor},
-        OrtTensor,
+        construct::ConstructTensor, ort_input_tensor::OrtInputTensor,
+        ort_output_tensor::OrtOwnedTensorExtractor, OrtOutputTensor,
     },
     AllocatorType, GraphOptimizationLevel, MemType, TensorElementDataType,
-    TypeToTensorElementDataType,
 };
 
 #[cfg(feature = "model-fetching")]
@@ -375,18 +373,23 @@ impl Session {
     ///
     /// Note that ONNX models can have multiple inputs; a `Vec<_>` is thus
     /// used for the input data here.
-    pub fn run<'s, 't, 'm, TIn, TOut, D>(
-        &'s self,
-        input_arrays: Vec<Array<TIn, D>>,
-    ) -> Result<Vec<OrtOwnedTensor<'t, 'm, TOut, ndarray::IxDyn>>>
+    pub fn run<T>(&self, input_arrays: Vec<impl ConstructTensor + Debug>) -> Result<Vec<T>>
     where
-        TIn: TypeToTensorElementDataType + Debug + Clone,
-        TOut: TypeToTensorElementDataType + Debug + Clone,
-        D: ndarray::Dimension,
-        'm: 't, // 'm outlives 't (memory info outlives tensor)
-        's: 'm, // 's outlives 'm (session outlives memory info)
+        T: TryFrom<OrtOutputTensor, Error = OrtError> + Debug,
     {
-        self.validate_input_shapes(&input_arrays)?;
+        let memory_info = &self.memory_info;
+
+        let allocator = self.allocator_ptr;
+
+        let input_arrays = input_arrays
+            .into_iter()
+            .map(|v| v.construct(memory_info, allocator))
+            .collect::<Result<Vec<OrtInputTensor<_>>>>()?;
+
+        let input_arrays_shapes: Vec<Vec<usize>> =
+            input_arrays.iter().map(|v| v.shape().to_vec()).collect();
+
+        self.validate_input_shapes(&input_arrays_shapes)?;
 
         // Build arguments to Run()
 
@@ -412,14 +415,7 @@ impl Session {
         let mut output_tensor_extractors_ptrs: Vec<*mut sys::OrtValue> =
             vec![std::ptr::null_mut(); self.outputs.len()];
 
-        // The C API expects pointers for the arrays (pointers to C-arrays)
-        let input_ort_tensors: Vec<OrtTensor<TIn, D>> = input_arrays
-            .into_iter()
-            .map(|input_array| {
-                OrtTensor::from_array(&self.memory_info, self.allocator_ptr, input_array)
-            })
-            .collect::<Result<Vec<OrtTensor<TIn, D>>>>()?;
-        let input_ort_values: Vec<*const sys::OrtValue> = input_ort_tensors
+        let input_ort_values: Vec<*const sys::OrtValue> = input_arrays
             .iter()
             .map(|input_array_ort| input_array_ort.c_ptr as *const sys::OrtValue)
             .collect();
@@ -440,27 +436,25 @@ impl Session {
         };
         status_to_result(status).map_err(OrtError::Run)?;
 
-        let memory_info_ref = &self.memory_info;
-        let outputs: Result<Vec<OrtOwnedTensor<TOut, ndarray::Dim<ndarray::IxDynImpl>>>> =
-            output_tensor_extractors_ptrs
-                .into_iter()
-                .map(|ptr| {
-                    let mut tensor_info_ptr: *mut sys::OrtTensorTypeAndShapeInfo =
-                        std::ptr::null_mut();
-                    let status = unsafe {
-                        g_ort().GetTensorTypeAndShape.unwrap()(ptr, &mut tensor_info_ptr as _)
-                    };
-                    status_to_result(status).map_err(OrtError::GetTensorTypeAndShape)?;
-                    let dims = unsafe { get_tensor_dimensions(tensor_info_ptr) };
-                    unsafe { g_ort().ReleaseTensorTypeAndShapeInfo.unwrap()(tensor_info_ptr) };
-                    let dims: Vec<_> = dims?.iter().map(|&n| n as usize).collect();
+        let outputs: Result<Vec<OrtOutputTensor>> = output_tensor_extractors_ptrs
+            .into_iter()
+            .map(|ptr| {
+                let mut tensor_info_ptr: *mut sys::OrtTensorTypeAndShapeInfo = std::ptr::null_mut();
+                let status = unsafe {
+                    g_ort().GetTensorTypeAndShape.unwrap()(ptr, &mut tensor_info_ptr as _)
+                };
+                status_to_result(status).map_err(OrtError::GetTensorTypeAndShape)?;
+                let dims = unsafe { get_tensor_dimensions(tensor_info_ptr) };
 
-                    let mut output_tensor_extractor =
-                        OrtOwnedTensorExtractor::new(memory_info_ref, ndarray::IxDyn(&dims));
-                    output_tensor_extractor.tensor_ptr = ptr;
-                    output_tensor_extractor.extract::<TOut>()
-                })
-                .collect();
+                unsafe { g_ort().ReleaseTensorTypeAndShapeInfo.unwrap()(tensor_info_ptr) };
+                let dims: Vec<_> = dims?.iter().map(|&n| n as usize).collect();
+
+                let mut output_tensor_extractor = OrtOwnedTensorExtractor::new(dims);
+                output_tensor_extractor.tensor_ptr = ptr;
+
+                output_tensor_extractor.extract()
+            })
+            .collect();
 
         // Reconvert to CString so drop impl is called and memory is freed
         let cstrings: Result<Vec<CString>> = input_names_ptr
@@ -472,33 +466,29 @@ impl Session {
             .collect();
         cstrings?;
 
-        outputs
+        outputs?
+            .into_iter()
+            .map(|v| T::try_from(v))
+            .collect::<Result<Vec<T>>>()
     }
 
-    fn validate_input_shapes<TIn, D>(&self, input_arrays: &[Array<TIn, D>]) -> Result<()>
-    where
-        TIn: TypeToTensorElementDataType + Debug + Clone,
-        D: ndarray::Dimension,
-    {
+    fn validate_input_shapes(&self, input_array_shapes: &[Vec<usize>]) -> Result<()> {
         // ******************************************************************
         // FIXME: Properly handle errors here
         // Make sure all dimensions match (except dynamic ones)
 
         // Verify length of inputs
-        if input_arrays.len() != self.inputs.len() {
+        if input_array_shapes.len() != self.inputs.len() {
             error!(
                 "Non-matching number of inputs: {} (inference) vs {} (model)",
-                input_arrays.len(),
+                input_array_shapes.len(),
                 self.inputs.len()
             );
             return Err(OrtError::NonMatchingDimensions(
                 NonMatchingDimensionsError::InputsCount {
                     inference_input_count: 0,
                     model_input_count: 0,
-                    inference_input: input_arrays
-                        .iter()
-                        .map(|input_array| input_array.shape().to_vec())
-                        .collect(),
+                    inference_input: input_array_shapes.to_vec(),
                     model_input: self
                         .inputs
                         .iter()
@@ -509,20 +499,20 @@ impl Session {
         }
 
         // Verify length of each individual inputs
-        let inputs_different_length = input_arrays
+        let inputs_different_length = input_array_shapes
             .iter()
             .zip(self.inputs.iter())
-            .any(|(l, r)| l.shape().len() != r.dimensions.len());
+            .any(|(l, r)| l.len() != r.dimensions.len());
         if inputs_different_length {
             error!(
                 "Different input lengths: {:?} vs {:?}",
-                self.inputs, input_arrays
+                self.inputs, input_array_shapes
             );
             return Err(OrtError::NonMatchingDimensions(
                 NonMatchingDimensionsError::InputsLength {
-                    inference_input: input_arrays
+                    inference_input: input_array_shapes
                         .iter()
-                        .map(|input_array| input_array.shape().to_vec())
+                        .map(|input_array| input_array.to_vec())
                         .collect(),
                     model_input: self
                         .inputs
@@ -534,24 +524,28 @@ impl Session {
         }
 
         // Verify shape of each individual inputs
-        let inputs_different_shape = input_arrays.iter().zip(self.inputs.iter()).any(|(l, r)| {
-            let l_shape = l.shape();
-            let r_shape = r.dimensions.as_slice();
-            l_shape.iter().zip(r_shape.iter()).any(|(l2, r2)| match r2 {
-                Some(r3) => *r3 as usize != *l2,
-                None => false, // None means dynamic size; in that case shape always match
-            })
-        });
+        let inputs_different_shape =
+            input_array_shapes
+                .iter()
+                .zip(self.inputs.iter())
+                .any(|(l, r)| {
+                    let l_shape = l;
+                    let r_shape = r.dimensions.as_slice();
+                    l_shape.iter().zip(r_shape.iter()).any(|(l2, r2)| match r2 {
+                        Some(r3) => *r3 as usize != *l2,
+                        None => false, // None means dynamic size; in that case shape always match
+                    })
+                });
         if inputs_different_shape {
             error!(
                 "Different input lengths: {:?} vs {:?}",
-                self.inputs, input_arrays
+                self.inputs, input_array_shapes
             );
             return Err(OrtError::NonMatchingDimensions(
                 NonMatchingDimensionsError::InputsLength {
-                    inference_input: input_arrays
+                    inference_input: input_array_shapes
                         .iter()
-                        .map(|input_array| input_array.shape().to_vec())
+                        .map(|input_array| input_array.to_vec())
                         .collect(),
                     model_input: self
                         .inputs
