@@ -5,6 +5,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader},
     path::Path,
+    sync::Arc,
     time::Duration,
 };
 
@@ -216,7 +217,7 @@ mod download {
             .build()
             .unwrap();
 
-        let session = std::sync::Arc::new(std::sync::Mutex::new(
+        let session = Arc::new(
             environment
                 .new_session_builder()
                 .unwrap()
@@ -226,14 +227,12 @@ mod download {
                 .unwrap()
                 .with_model_downloaded(DomainBasedImageClassification::Mnist)
                 .expect("Could not download model from file"),
-        ));
+        );
 
         let children: Vec<std::thread::JoinHandle<()>> = (0..20)
-            .map(|_| {
+            .map(move |_| {
                 let session = session.clone();
                 std::thread::spawn(move || {
-                    let session = session.lock().unwrap();
-
                     let input0_shape: Vec<usize> =
                         session.inputs[0].dimensions().map(|d| d.unwrap()).collect();
                     let output0_shape: Vec<usize> = session.outputs[0]

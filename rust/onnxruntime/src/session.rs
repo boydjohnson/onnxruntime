@@ -193,11 +193,10 @@ impl<'a> SessionBuilder<'a> {
             .map(|b| *b as std::os::raw::c_char)
             .collect();
         let env = self.env.env();
-        let guard = env.lock().unwrap();
 
         let status = unsafe {
             g_ort().CreateSession.unwrap()(
-                (*guard).env_ptr,
+                env.env_ptr,
                 model_path.as_ptr(),
                 self.session_options_ptr,
                 &mut session_ptr,
@@ -247,13 +246,11 @@ impl<'a> SessionBuilder<'a> {
 
         let env = self.env.env();
 
-        let guard = env.lock().unwrap();
-
         let status = unsafe {
             let model_data = model_bytes.as_ptr().cast::<std::ffi::c_void>();
             let model_data_length = model_bytes.len();
             g_ort().CreateSessionFromArray.unwrap()(
-                (*guard).env_ptr,
+                env.env_ptr,
                 model_data,
                 model_data_length,
                 self.session_options_ptr,
@@ -368,6 +365,8 @@ impl Drop for Session {
 }
 
 unsafe impl Send for Session {}
+
+unsafe impl Sync for Session {}
 
 impl Session {
     /// Run the input data through the ONNX graph, performing inference.
